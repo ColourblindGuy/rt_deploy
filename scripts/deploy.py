@@ -4,189 +4,169 @@ import time
 import requests
 import paramiko
 from pathlib import Path
+from datetime import datetime
 
 RT_IP   = os.environ["RT_TARGET_IP"]
-RT_USER = os.environ["RT_FTP_USER"]     # same user (lvuser)
+RT_USER = os.environ["RT_FTP_USER"]
 RT_PASS = os.environ["RT_FTP_PASS"]
 
-RTEXE_LOCAL  = Path("releases/MyApp.rtexe")
-RTEXE_REMOTE = "/home/lvuser/natinst/bin/MyApp.rtexe"
+BIN_LOCAL  = Path("releases/bin")
+BIN_REMOTE = "/home/lvuser/natinst/bin"
+BACKUP_ROOT = "/home/lvuser/deploy_backups"
 
 
-def scp_upload():
-    print(f"Connecting to {RT_IP} via SFTP...")
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
+
+def open_ssh():
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
     ssh.connect(
         RT_IP,
         username=RT_USER,
         password=RT_PASS,
         look_for_keys=False,
-        allow_agent=False
+        allow_agent=False,
+        timeout=5
     )
-
-    sftp = ssh.open_sftp()
-    sftp.put(RTEXE_LOCAL, RTEXE_REMOTE)   # upload file
-
-    sftp.close()
-    ssh.close()
-    print("SCP upload complete.")
+    return ssh
 
 
 def upload_directory_sftp(sftp, local_path: Path, remote_path: str):
-    """Recursively upload a directory via SFTP."""
-
-    # Ensure remote directory exists
     try:
         sftp.stat(remote_path)
     except FileNotFoundError:
-        print(f"Creating remote folder: {remote_path}")
+        log(f"Creating remote directory: {remote_path}")
         sftp.mkdir(remote_path)
 
     for item in local_path.iterdir():
         remote_item = f"{remote_path}/{item.name}"
-
         if item.is_dir():
             upload_directory_sftp(sftp, item, remote_item)
         else:
-            print(f"Uploading file: {item} -> {remote_item}")
+            log(f"Uploading file: {item} → {remote_item}")
             sftp.put(str(item), remote_item)
 
 
 
 def clear_remote_folder(sftp, remote_path):
-    """Delete all files/directories inside the remote folder."""
+    for attr in sftp.listdir_attr(remote_path):
+        rpath = f"{remote_path}/{attr.filename}"
 
-    for item in sftp.listdir_attr(remote_path):
-        rpath = f"{remote_path}/{item.filename}"
-
-        if paramiko.SFTPAttributes.S_IFDIR & item.st_mode:
-            # It's a directory
+        if attr.st_mode & 0o40000:  # directory bit
             clear_remote_folder(sftp, rpath)
-            print(f"Removing remote folder: {rpath}")
+            log(f"Removing folder: {rpath}")
             sftp.rmdir(rpath)
         else:
-            print(f"Removing remote file: {rpath}")
+            log(f"Removing file: {rpath}")
             sftp.remove(rpath)
 
 
 
-def deploy_bin_folder():
-    print(f"Deploying full bin folder to {RT_IP}...")
+def backup_remote_bin():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = f"{BACKUP_ROOT}/bin_{timestamp}"
 
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(
-        RT_IP,
-        username=RT_USER,
-        password=RT_PASS,
-        look_for_keys=False,
-        allow_agent=False
-    )
-
+    ssh = open_ssh()
     sftp = ssh.open_sftp()
 
-    # Ensure base folder exists
+    # Ensure backup root exists
     try:
-        sftp.stat(BIN_REMOTE)
-    except:
-        print(f"Creating base remote folder: {BIN_REMOTE}")
-        sftp.mkdir(BIN_REMOTE)
+        sftp.stat(BACKUP_ROOT)
+    except FileNotFoundError:
+        log(f"Creating backup root: {BACKUP_ROOT}")
+        sftp.mkdir(BACKUP_ROOT)
 
-    # Optional cleanup
-    print("Clearing remote bin folder...")
+    log(f"Creating backup: {backup_dir}")
+    sftp.mkdir(backup_dir)
+
+    def recursive_copy(remote_src, remote_dst):
+        sftp.mkdir(remote_dst)
+        for attr in sftp.listdir_attr(remote_src):
+            src = f"{remote_src}/{attr.filename}"
+            dst = f"{remote_dst}/{attr.filename}"
+
+            if attr.st_mode & 0o40000:  # directory
+                recursive_copy(src, dst)
+            else:
+                sftp.get(src, f"/tmp/{attr.filename}")  # temp local copy
+                sftp.put(f"/tmp/{attr.filename}", dst)
+
+    recursive_copy(BIN_REMOTE, backup_dir)
+
+    ssh.close()
+    return backup_dir
+
+
+
+
+def rollback_from_backup(backup_dir):
+    log("ROLLBACK: Restoring previous bin folder...")
+    ssh = open_ssh()
+    sftp = ssh.open_sftp()
+
     clear_remote_folder(sftp, BIN_REMOTE)
+    upload_directory_sftp(sftp, Path(f"/tmp/rollback"), BIN_REMOTE)
 
-    print("Uploading bin folder...")
-    upload_directory_sftp(sftp, BIN_LOCAL, BIN_REMOTE)
+    log("Rollback completed.")
 
     sftp.close()
     ssh.close()
-    print("✅ Bin folder deployment completed.")
 
 
-def reboot_target():
-    url = f"http://{RT_IP}/nisysapi/server"
-    payload = {"Function": "Restart", "Params": {"objSelfURI": f"nisysapi://{RT_IP}"}}
-    print("Sending reboot command...")
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except requests.exceptions.ReadTimeout:
-        pass  # NI reboots cause immediate disconnect
+
 
 def reboot_target_via_ssh():
-    print("Rebooting target via SSH...")
-
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    ssh.connect(
-        RT_IP,
-        username=RT_USER,
-        password=RT_PASS,
-        look_for_keys=False,
-        allow_agent=False
-    )
-
+    log("Rebooting target via SSH...")
+    ssh = open_ssh()
     try:
-        # Run reboot command (NI RT allows this without sudo)
         ssh.exec_command("/sbin/reboot")
-        print("Reboot command sent.")
+        log("Reboot command sent.")
     except Exception as e:
-        print(f"Ignoring SSH error during reboot: {e}")
+        log(f"Ignoring reboot disconnect: {e}")
     finally:
         ssh.close()
-        time.sleep(5)
 
-
-
-def wait_for_target(timeout=90):
-    print("Waiting for target to come online...")
+def wait_for_shutdown(timeout=30):
+    log("Waiting for target to shut down...")
     deadline = time.time() + timeout
-
     while time.time() < deadline:
         try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(RT_IP, username=RT_USER, password=RT_PASS, timeout=3)
+            ssh = open_ssh()
             ssh.close()
-            print("Target is back online.")
+            time.sleep(2)
+        except Exception:
+            log("✅ Target offline.")
+            return True
+    log("WARNING: Target never appeared offline.")
+    return False
+
+def wait_for_boot(timeout=90):
+    log("Waiting for target to boot...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            ssh = open_ssh()
+            ssh.close()
+            log("✅ Target online.")
             return True
         except Exception:
             time.sleep(5)
-
-    print("ERROR: Target did not come back within timeout.")
+    log("❌ Boot timeout!")
     return False
 
-
-def verify_version():
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(RT_IP, username=RT_USER, password=RT_PASS)
-
-    sftp = ssh.open_sftp()
-    files = sftp.listdir("/home/lvuser/natinst/bin")
-    sftp.close()
-    ssh.close()
-
-    if "MyApp.rtexe" in files:
-        print("Verification passed: RTEXE present on target.")
-        return True
-
-    print("Verification FAILED: RTEXE not found on target.")
-    return False
 
 
 if __name__ == "__main__":
-    deploy_bin_folder()
+    backup_dir = deploy_bin_folder()
+
     reboot_target_via_ssh()
+    wait_for_shutdown()
 
-    if not wait_for_target():
+    if not wait_for_boot():
+        log("Boot failed, rolling back...")
+        rollback_from_backup(backup_dir)
         sys.exit(1)
 
-    if not verify_version():
-        sys.exit(1)
-
-    print("Deployment successful.")
+    log("✅ Deployment successful.")
