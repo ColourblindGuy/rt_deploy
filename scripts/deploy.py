@@ -44,6 +44,30 @@ def reboot_target():
     except requests.exceptions.ReadTimeout:
         pass  # NI reboots cause immediate disconnect
 
+def reboot_target_via_ssh():
+    print("Rebooting target via SSH...")
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    ssh.connect(
+        RT_IP,
+        username=RT_USER,
+        password=RT_PASS,
+        look_for_keys=False,
+        allow_agent=False
+    )
+
+    try:
+        # Run reboot command (NI RT allows this without sudo)
+        ssh.exec_command("/sbin/reboot")
+        print("Reboot command sent.")
+    except Exception as e:
+        print(f"Ignoring SSH error during reboot: {e}")
+    finally:
+        ssh.close()
+
+
 
 def wait_for_target(timeout=90):
     print("Waiting for target to come online...")
@@ -84,7 +108,7 @@ def verify_version():
 
 if __name__ == "__main__":
     scp_upload()
-    reboot_target()
+    reboot_target_via_ssh()
 
     if not wait_for_target():
         sys.exit(1)
