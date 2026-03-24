@@ -66,6 +66,7 @@ def reboot_target_via_ssh():
         print(f"Ignoring SSH error during reboot: {e}")
     finally:
         ssh.close()
+        time.sleep(5)
 
 
 
