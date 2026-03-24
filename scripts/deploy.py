@@ -10,7 +10,7 @@ RT_USER = os.environ["RT_FTP_USER"]
 RT_PASS = os.environ["RT_FTP_PASS"]
 
 RTEXE_LOCAL  = Path("releases/MyApp.rtexe")   # adjust to your file path
-RTEXE_REMOTE = "/ni-rt/startup/MyApp.rtexe"   # standard NI RT deploy path
+RTEXE_REMOTE = "/home/lvuser/natinst/bin/MyApp.rtexe"   # standard NI RT deploy path
 
 def ftp_upload():
     print(f"Connecting to {RT_IP} via FTP...")
@@ -46,7 +46,7 @@ def wait_for_target(timeout=90):
 def verify_version():
     # Read a version file you write from your RT app, or check a known file timestamp
     with ftplib.FTP(RT_IP, RT_USER, RT_PASS) as ftp:
-        files = ftp.nlst("/ni-rt/startup/")
+        files = ftp.nlst("/home/lvuser/natinst/bin")
         if "MyApp.rtexe" in [f.split("/")[-1] for f in files]:
             print("Verification passed: RTEXE present on target.")
             return True
