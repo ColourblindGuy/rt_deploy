@@ -15,6 +15,64 @@ BIN_REMOTE = "/home/lvuser/natinst/bin"
 BACKUP_ROOT = "/home/lvuser/deploy_backups"
 
 
+
+def ensure_remote_dir(sftp, path):
+    """Create remote directory tree if not exists."""
+    parts = path.strip("/").split("/")
+    cur = ""
+    for part in parts:
+        cur = f"{cur}/{part}" if cur else f"/{part}"
+        try:
+            sftp.stat(cur)
+        except FileNotFoundError:
+            log(f"Creating remote directory: {cur}")
+            sftp.mkdir(cur)
+
+
+def recursive_remote_copy(sftp, src, dst):
+    """Copy a remote folder to another remote folder recursively."""
+    ensure_remote_dir(sftp, dst)
+
+    for attr in sftp.listdir_attr(src):
+        src_item = f"{src}/{attr.filename}"
+        dst_item = f"{dst}/{attr.filename}"
+
+        # Directory?
+        if attr.st_mode & 0o40000:
+            recursive_remote_copy(sftp, src_item, dst_item)
+        else:
+            log(f"Backing up file: {src_item} → {dst_item}")
+            with sftp.open(src_item, "rb") as fsrc:
+                data = fsrc.read()
+            with sftp.open(dst_item, "wb") as fdst:
+                fdst.write(data)
+
+
+
+def backup_remote_bin():
+    ssh = open_ssh()
+    sftp = ssh.open_sftp()
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = f"{BACKUP_ROOT}/bin_{timestamp}"
+
+    log(f"Ensuring backup root exists: {BACKUP_ROOT}")
+    ensure_remote_dir(sftp, BACKUP_ROOT)
+
+    log(f"Creating backup directory: {backup_dir}")
+    ensure_remote_dir(sftp, backup_dir)
+
+    log("Starting recursive backup...")
+    recursive_remote_copy(sftp, BIN_REMOTE, backup_dir)
+
+    sftp.close()
+    ssh.close()
+
+    log(f"✅ Backup complete: {backup_dir}")
+    return backup_dir
+
+
+
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
@@ -61,6 +119,8 @@ def clear_remote_folder(sftp, remote_path):
         else:
             log(f"Removing file: {rpath}")
             sftp.remove(rpath)
+
+
 
 
 
@@ -191,14 +251,30 @@ def wait_for_boot(timeout=90):
 
 
 if __name__ == "__main__":
-    backup_dir = deploy_bin_folder()
+    log("=== Starting RT Deployment ===")
 
+    # 1. Deploy with backup
+    try:
+        backup_dir = deploy_bin_folder()
+    except Exception as e:
+        log(f"❌ Deployment failed before reboot. Error: {e}")
+        sys.exit(1)
+
+    # 2. Reboot
     reboot_target_via_ssh()
-    wait_for_shutdown()
 
-    if not wait_for_boot():
-        log("Boot failed, rolling back...")
+    # 3. Wait for shutdown
+    if not wait_for_shutdown():
+        log("⚠️ WARNING: Target did not go offline. Attempting rollback...")
         rollback_from_backup(backup_dir)
         sys.exit(1)
 
-    log("✅ Deployment successful.")
+    # 4. Wait for boot
+    if not wait_for_boot():
+        log("❌ ERROR: Target did not come back online. Rolling back...")
+        rollback_from_backup(backup_dir)
+        sys.exit(1)
+
+    # 5. Optional: verify (can be simple ping, file check, etc.)
+    # For now we trust the boot.
+    log("✅ Deployment successful. Target restarted and reachable.")
