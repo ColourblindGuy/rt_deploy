@@ -146,7 +146,6 @@ def deploy_bin_folder():
         rollback_from_backup(backup_dir)
 
         sys.exit(1)
-``
 
 
 
