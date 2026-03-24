@@ -26,7 +26,7 @@ jobs:
           RT_TARGET_IP:   ${{ secrets.RT_TARGET_IP }}
           RT_FTP_USER:    ${{ secrets.RT_FTP_USER }}
           RT_FTP_PASS:    ${{ secrets.RT_FTP_PASS }}
-        run: python scripts/deploy_rt.py
+        run: python scripts/deploy.py
 
       - name: Notify on failure
         if: failure()
