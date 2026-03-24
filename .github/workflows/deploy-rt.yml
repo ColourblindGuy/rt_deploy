@@ -13,6 +13,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Enable PowerShell scripts
+        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
+        shell: pwsh
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
