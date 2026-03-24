@@ -35,6 +35,78 @@ def scp_upload():
     print("SCP upload complete.")
 
 
+def upload_directory_sftp(sftp, local_path: Path, remote_path: str):
+    """Recursively upload a directory via SFTP."""
+
+    # Ensure remote directory exists
+    try:
+        sftp.stat(remote_path)
+    except FileNotFoundError:
+        print(f"Creating remote folder: {remote_path}")
+        sftp.mkdir(remote_path)
+
+    for item in local_path.iterdir():
+        remote_item = f"{remote_path}/{item.name}"
+
+        if item.is_dir():
+            upload_directory_sftp(sftp, item, remote_item)
+        else:
+            print(f"Uploading file: {item} -> {remote_item}")
+            sftp.put(str(item), remote_item)
+
+
+
+def clear_remote_folder(sftp, remote_path):
+    """Delete all files/directories inside the remote folder."""
+
+    for item in sftp.listdir_attr(remote_path):
+        rpath = f"{remote_path}/{item.filename}"
+
+        if paramiko.SFTPAttributes.S_IFDIR & item.st_mode:
+            # It's a directory
+            clear_remote_folder(sftp, rpath)
+            print(f"Removing remote folder: {rpath}")
+            sftp.rmdir(rpath)
+        else:
+            print(f"Removing remote file: {rpath}")
+            sftp.remove(rpath)
+
+
+
+def deploy_bin_folder():
+    print(f"Deploying full bin folder to {RT_IP}...")
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(
+        RT_IP,
+        username=RT_USER,
+        password=RT_PASS,
+        look_for_keys=False,
+        allow_agent=False
+    )
+
+    sftp = ssh.open_sftp()
+
+    # Ensure base folder exists
+    try:
+        sftp.stat(BIN_REMOTE)
+    except:
+        print(f"Creating base remote folder: {BIN_REMOTE}")
+        sftp.mkdir(BIN_REMOTE)
+
+    # Optional cleanup
+    print("Clearing remote bin folder...")
+    clear_remote_folder(sftp, BIN_REMOTE)
+
+    print("Uploading bin folder...")
+    upload_directory_sftp(sftp, BIN_LOCAL, BIN_REMOTE)
+
+    sftp.close()
+    ssh.close()
+    print("✅ Bin folder deployment completed.")
+
+
 def reboot_target():
     url = f"http://{RT_IP}/nisysapi/server"
     payload = {"Function": "Restart", "Params": {"objSelfURI": f"nisysapi://{RT_IP}"}}
@@ -108,7 +180,7 @@ def verify_version():
 
 
 if __name__ == "__main__":
-    scp_upload()
+    deploy_bin_folder()
     reboot_target_via_ssh()
 
     if not wait_for_target():
