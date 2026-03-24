@@ -1,0 +1,33 @@
+name: Deploy to RT target
+
+on:
+  push:
+    branches:
+      - releases
+
+jobs:
+  deploy:
+    runs-on: garbanzo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Deploy RTEXE to target
+        env:
+          RT_TARGET_IP:   ${{ secrets.RT_TARGET_IP }}
+          RT_FTP_USER:    ${{ secrets.RT_FTP_USER }}
+          RT_FTP_PASS:    ${{ secrets.RT_FTP_PASS }}
+        run: python scripts/deploy_rt.py
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "Deployment failed — check logs above."
