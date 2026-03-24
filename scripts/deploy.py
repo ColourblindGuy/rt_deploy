@@ -116,6 +116,39 @@ def rollback_from_backup(backup_dir):
 
 
 
+def deploy_bin_folder():
+    log(f"Deploying full bin folder to {RT_IP}...")
+
+    ssh = open_ssh()
+    sftp = ssh.open_sftp()
+
+    # Backup
+    log("Creating backup of current /bin folder...")
+    backup_dir = backup_remote_bin()
+
+    try:
+        log("Clearing /bin folder on target...")
+        clear_remote_folder(sftp, BIN_REMOTE)
+
+        log("Uploading new bin folder...")
+        upload_directory_sftp(sftp, BIN_LOCAL, BIN_REMOTE)
+
+        log("✅ Deployment upload completed.")
+        sftp.close()
+        ssh.close()
+
+        return backup_dir
+
+    except Exception as e:
+        log(f"❌ ERROR during upload: {e}")
+        log("Attempting rollback...")
+
+        rollback_from_backup(backup_dir)
+
+        sys.exit(1)
+``
+
+
 
 def reboot_target_via_ssh():
     log("Rebooting target via SSH...")
